@@ -1,0 +1,51 @@
+flowchart TD
+    USER["User"] --> UI["React + TypeScript"]
+
+    subgraph FRONTEND["Frontend"]
+        UI --> CHAT["Agent Chat"]
+        UI --> SETTINGS["Integration Settings"]
+        UI --> DASH["Security Dashboard"]
+    end
+
+    CHAT -->|"HTTP"| API["FastAPI"]
+    DASH <-->|"WebSocket"| WS["WebSocket Event Hub"]
+
+    subgraph BACKEND["Backend"]
+        API --> AGENT["Pydantic AI Orchestrator"]
+        AGENT --> GATE["ShadowGuard Interceptor"]
+        GATE --> TRUST["Trust Registry"]
+        TRUST --> TAINT["Taint and Provenance Engine"]
+        TAINT --> POLICY{"Policy and Risk Engine"}
+
+        POLICY -->|"Tainted to High Trust"| BLOCK["Block"]
+        POLICY -->|"Safe permitted operation"| TOOL["FastMCP Tool"]
+        POLICY -->|"Destructive operation"| SHADOW["Shadow State Manager"]
+
+        SHADOW --> CLONE["In-memory SQLite Clone"]
+        CLONE --> BLAST["Blast Radius Analyzer"]
+        BLAST --> APPROVAL["Approval Manager"]
+
+        APPROVAL -->|"Immediate pending result"| AGENT
+        APPROVAL -->|"Approval event"| WS
+        BLOCK -->|"Structured isError true"| AGENT
+        BLOCK --> WS
+
+        APPROVAL --> DECISION{"Human Decision"}
+        DECISION -->|"Reject"| DISCARD["Discard Shadow State"]
+        DECISION -->|"Approve"| REVALIDATE["Revalidate Policy and Snapshot"]
+        REVALIDATE --> COMMIT["Transactional Commit"]
+        COMMIT --> DB["Protected SQLite"]
+        DISCARD --> AUDIT["Audit Log"]
+        COMMIT --> AUDIT
+        AUDIT --> WS
+    end
+
+    subgraph TOOLS["MCP Integrations"]
+        GH["GitHub Reader - HIGH"]
+        WEATHER["Weather API - LOW"]
+        DB2["Production Database - HIGH"]
+    end
+
+    TOOL --> GH
+    TOOL --> WEATHER
+    TOOL --> DB2
