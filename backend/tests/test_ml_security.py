@@ -167,6 +167,28 @@ def test_persisted_random_forest_returns_normalized_probability_score():
     assert 0 <= result['ml_trust_score'] <= 100
 
 
+def test_trust_inference_uses_one_probability_evaluation():
+    class ProbabilityOnlyModel:
+        classes_ = ['HIGH_TRUST', 'LOW_TRUST']
+
+        def __init__(self):
+            self.calls = 0
+
+        def predict_proba(self, _features):
+            self.calls += 1
+            return [[0.9, 0.1]]
+
+        def predict(self, _features):
+            raise AssertionError('predict would repeat the probability evaluation')
+
+    model = ProbabilityOnlyModel()
+    result = MLModelRuntime(trust_model=model).predict_trust(secure_tool())
+
+    assert model.calls == 1
+    assert result['ml_trust_score'] == 90.0
+    assert result['ml_classification'] == 'HIGH_TRUST'
+
+
 def test_read_only_request_with_delete_action_is_potentially_unintended():
     result = get_ml_models().classify_intent(
         'List users without changing data', ['read'], 'production_database',

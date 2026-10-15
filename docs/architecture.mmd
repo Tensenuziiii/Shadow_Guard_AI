@@ -1,51 +1,37 @@
 flowchart TD
-    USER["User"] --> UI["React + TypeScript"]
-
-    subgraph FRONTEND["Frontend"]
-        UI --> CHAT["Agent Chat"]
-        UI --> SETTINGS["Integration Settings"]
-        UI --> DASH["Security Dashboard"]
-    end
-
-    CHAT -->|"HTTP"| API["FastAPI"]
-    DASH <-->|"WebSocket"| WS["WebSocket Event Hub"]
+    USER["User / operator"] --> UI["React + JavaScript dashboard"]
+    UI -->|"HTTP: /api/chat"| API["FastAPI"]
+    UI <-->|"WebSocket: /ws"| EVENTS["In-memory event hub"]
 
     subgraph BACKEND["Backend"]
-        API --> AGENT["Pydantic AI Orchestrator"]
-        AGENT --> GATE["ShadowGuard Interceptor"]
-        GATE --> TRUST["Trust Registry"]
-        TRUST --> TAINT["Taint and Provenance Engine"]
-        TAINT --> POLICY{"Policy and Risk Engine"}
-
-        POLICY -->|"Tainted to High Trust"| BLOCK["Block"]
-        POLICY -->|"Safe permitted operation"| TOOL["FastMCP Tool"]
-        POLICY -->|"Destructive operation"| SHADOW["Shadow State Manager"]
-
-        SHADOW --> CLONE["In-memory SQLite Clone"]
-        CLONE --> BLAST["Blast Radius Analyzer"]
-        BLAST --> APPROVAL["Approval Manager"]
-
-        APPROVAL -->|"Immediate pending result"| AGENT
-        APPROVAL -->|"Approval event"| WS
-        BLOCK -->|"Structured isError true"| AGENT
-        BLOCK --> WS
-
-        APPROVAL --> DECISION{"Human Decision"}
-        DECISION -->|"Reject"| DISCARD["Discard Shadow State"]
-        DECISION -->|"Approve"| REVALIDATE["Revalidate Policy and Snapshot"]
-        REVALIDATE --> COMMIT["Transactional Commit"]
-        COMMIT --> DB["Protected SQLite"]
-        DISCARD --> AUDIT["Audit Log"]
-        COMMIT --> AUDIT
-        AUDIT --> WS
+        API --> AGENT["Pydantic AI agent"]
+        AGENT -->|"guarded tool adapter"| GATE["ShadowGuard interceptor"]
+        GATE --> TRUST["Trust registry + model signals"]
+        GATE --> INTENT["Capability, intent, and SQL policy"]
+        GATE --> TAINT["Session taint + provenance"]
+        TRUST --> POLICY{"Policy decision"}
+        INTENT --> POLICY
+        TAINT --> POLICY
+        POLICY -->|"deny"| BLOCK["Block and audit"]
+        POLICY -->|"permitted"| ADAPTER["Integration adapter"]
+        POLICY -->|"protected SQL action"| SHADOW["In-memory SQLite simulation"]
+        SHADOW -->|"pending action"| APPROVAL["Approval manager"]
+        APPROVAL -->|"pending status"| AGENT
+        UI -->|"POST decision + Bearer operator token"| APPROVAL
+        APPROVAL -->|"revalidate then execute"| DB["Local production-demo SQLite"]
+        GATE --> AUDIT["SQLite audit/session database"]
+        APPROVAL --> AUDIT
+        BLOCK --> EVENTS
+        APPROVAL --> EVENTS
+        AUDIT --> EVENTS
     end
 
-    subgraph TOOLS["MCP Integrations"]
-        GH["GitHub Reader - HIGH"]
-        WEATHER["Weather API - LOW"]
-        DB2["Production Database - HIGH"]
+    subgraph INTEGRATIONS["Registered integrations"]
+        GH["GitHub Contents API"]
+        WEATHER["Open-Meteo"]
     end
+    ADAPTER --> GH
+    ADAPTER --> WEATHER
 
-    TOOL --> GH
-    TOOL --> WEATHER
-    TOOL --> DB2
+    NOTE["FastMCP tool decorators are present, but this app does not start a standalone MCP transport. The chat path uses guarded Pydantic AI tools."]
+    NOTE -.-> AGENT

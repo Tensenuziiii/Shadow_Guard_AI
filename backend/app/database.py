@@ -3,7 +3,11 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from app.config import DB_PATH, PRODUCTION_DB_PATH
+from app.config import (
+    DB_PATH,
+    GITHUB_ALLOWED_REPOSITORIES,
+    PRODUCTION_DB_PATH,
+)
 
 SCHEMA = [
     """
@@ -217,9 +221,21 @@ def ensure_production_demo_db(path: str | None = None) -> None:
 
 def seed_defaults(conn: sqlite3.Connection) -> None:
     defaults = [
-        ('github_reader', 'HIGH', 'Local GitHub cleanup script fixture', ['read'], ['repo:demo', 'cleanup_script.sql'], 'internal', ['production_database'], []),
+        (
+            'github_reader',
+            'HIGH',
+            'Authenticated GitHub repository content reader',
+            ['read'],
+            [
+                *(f'repo:{repository}' for repository in GITHUB_ALLOWED_REPOSITORIES),
+                'backend/data/cleanup_script.sql',
+            ],
+            'internal',
+            ['production_database'],
+            [],
+        ),
         ('production_database', 'HIGH', 'Protected SQLite database', ['read', 'write'], ['users'], 'protected', [], []),
-        ('weather_api', 'LOW', 'Mock weather service', ['read', 'external_read'], ['weather:city'], 'public', [], []),
+        ('weather_api', 'LOW', 'Open-Meteo current weather service', ['read', 'external_read'], ['weather:city'], 'public', [], []),
     ]
     for name, trust_zone, description, capabilities, resources, sensitivity, relationships, outbound in defaults:
         score = 90 if trust_zone == 'HIGH' else 55
@@ -279,6 +295,15 @@ def seed_defaults(conn: sqlite3.Connection) -> None:
                 name,
             ),
         )
+        if name == 'github_reader':
+            conn.execute(
+                """
+                UPDATE tool_registry
+                SET description = ?, permitted_resources_json = ?
+                WHERE name = ?
+                """,
+                (description, json.dumps(resources), name),
+            )
     conn.commit()
 
 

@@ -21,6 +21,22 @@ TRUST_WEIGHTS = {
     'relationships': 10,
 }
 HIGH_TRUST_THRESHOLD = 70
+TRUST_ZONE_RANK = {'LOW': 0, 'MEDIUM': 1, 'HIGH': 2}
+CLASSIFICATION_ZONE = {'LOW_TRUST': 'LOW', 'HIGH_TRUST': 'HIGH'}
+
+
+def effective_trust_zone(configured_zone: str, classification: str) -> str:
+    configured_zone = configured_zone.upper()
+    if configured_zone not in TRUST_ZONE_RANK:
+        raise ValueError(f'Unsupported configured trust zone: {configured_zone}')
+    try:
+        calculated_zone = CLASSIFICATION_ZONE[classification]
+    except KeyError as exc:
+        raise ValueError(f'Unsupported trust classification: {classification}') from exc
+    return max(
+        (configured_zone, calculated_zone),
+        key=TRUST_ZONE_RANK.__getitem__,
+    )
 
 
 class TrustRegistry:

@@ -2,10 +2,13 @@ import sqlite3
 
 import app.database as database_module
 import app.main as main_module
+import app.security.operator_auth as operator_auth
 import pytest
 from fastapi.testclient import TestClient
 
 app = main_module.app
+OPERATOR_TOKEN = 'test-approval-operator-token-with-at-least-32-bytes'
+OPERATOR_HEADERS = {'Authorization': f'Bearer {OPERATOR_TOKEN}'}
 
 
 @pytest.fixture
@@ -45,6 +48,23 @@ def test_session_starts_clean_and_low_trust_taints_session(isolated_databases):
         assert app.state.taint_engine.current_state(session_id) == 'TAINTED'
 
 
+def test_high_trust_github_server_content_is_still_tainted(isolated_databases):
+    reset_production_db(isolated_databases)
+    with TestClient(app):
+        session_id = 'session-github-taint-1'
+        result = app.state.interceptor.execute(
+            'github_reader',
+            {'repo': 'demo'},
+            session_id,
+            'demo-user',
+            user_objective='Read repository demo',
+            authorized_capabilities=['read'],
+        )
+
+        assert result.get('source') == 'local-fixture'
+        assert app.state.taint_engine.current_state(session_id) == 'TAINTED'
+
+
 def test_tainted_session_blocks_high_trust_tool(isolated_databases):
     reset_production_db(isolated_databases)
     with TestClient(app) as client:
@@ -55,7 +75,10 @@ def test_tainted_session_blocks_high_trust_tool(isolated_databases):
         assert blocked['policy_code'] == 'TAINTED_HIGH_TRUST_BLOCK'
 
 
-def test_destructive_sql_returns_pending_approval_and_reject_keeps_db_unchanged(isolated_databases):
+def test_destructive_sql_returns_pending_approval_and_reject_keeps_db_unchanged(
+    isolated_databases, monkeypatch
+):
+    monkeypatch.setattr(operator_auth, 'APPROVAL_OPERATOR_TOKEN', OPERATOR_TOKEN)
     reset_production_db(isolated_databases)
     with TestClient(app) as client:
         session_id = 'session-approval-1'
@@ -73,7 +96,16 @@ def test_destructive_sql_returns_pending_approval_and_reject_keeps_db_unchanged(
         conn.close()
         assert rowcount_before == 3
 
-        response = client.post(f'/api/approvals/{approval_id}/decision', json={'decision': 'reject', 'session_id': session_id, 'user_id': 'demo-user'})
+        unauthorized = client.post(
+            f'/api/approvals/{approval_id}/decision',
+            json={'decision': 'reject', 'session_id': session_id, 'user_id': 'demo-user'},
+        )
+        assert unauthorized.status_code == 401
+        response = client.post(
+            f'/api/approvals/{approval_id}/decision',
+            json={'decision': 'reject', 'session_id': session_id, 'user_id': 'demo-user'},
+            headers=OPERATOR_HEADERS,
+        )
         assert response.status_code == 200
         payload = response.json()
         assert payload['status'] == 'REJECTED'
@@ -84,7 +116,8 @@ def test_destructive_sql_returns_pending_approval_and_reject_keeps_db_unchanged(
         assert rowcount_after == 3
 
 
-def test_approved_sql_executes_transactionally_once(isolated_databases):
+def test_approved_sql_executes_transactionally_once(isolated_databases, monkeypatch):
+    monkeypatch.setattr(operator_auth, 'APPROVAL_OPERATOR_TOKEN', OPERATOR_TOKEN)
     reset_production_db(isolated_databases)
     with TestClient(app) as client:
         session_id = 'session-approve-1'
@@ -95,7 +128,11 @@ def test_approved_sql_executes_transactionally_once(isolated_databases):
         )
         approval_id = pending['approval_id']
 
-        response = client.post(f'/api/approvals/{approval_id}/decision', json={'decision': 'approve', 'session_id': session_id, 'user_id': 'demo-user'})
+        response = client.post(
+            f'/api/approvals/{approval_id}/decision',
+            json={'decision': 'approve', 'session_id': session_id, 'user_id': 'demo-user'},
+            headers=OPERATOR_HEADERS,
+        )
         assert response.status_code == 200
         payload = response.json()
         assert payload['status'] == 'EXECUTED'

@@ -10,7 +10,7 @@ from app.security.audit import AuditLogger
 from app.security.approvals import ApprovalManager
 from app.security.intent_guard import check_intent
 from app.security.ml_models import MLModelRuntime
-from app.security.registry import TrustRegistry
+from app.security.registry import TrustRegistry, effective_trust_zone
 from app.security.response_guard import ResponseGuard
 from app.security.response_synthesizer import synthesize_error, synthesize_pending
 from app.security.risk_engine import analyze_sql
@@ -310,10 +310,9 @@ class ShadowGuardInterceptor:
 
         # ---- TRUST_EVALUATED ----------------------------------------------
         trust_evaluation = self.trust_registry.evaluate_trust(tool)
-        effective_tool_zone = (
-            'LOW'
-            if trust_evaluation['classification'] == 'LOW_TRUST'
-            else tool['trust_zone']
+        effective_tool_zone = effective_trust_zone(
+            tool['trust_zone'],
+            trust_evaluation['classification'],
         )
         self._log(
             'TRUST_EVALUATED', session_id,
@@ -759,7 +758,11 @@ class ShadowGuardInterceptor:
                        request_id=request_id, severity='warning')
 
         tool_result_fields = list(raw_result) if isinstance(raw_result, dict) else list(result)
-        if effective_tool_zone == 'LOW' and result.get('status') != 'error' and not result.get('isError'):
+        result_is_untrusted = (
+            effective_tool_zone == 'LOW'
+            or tool_name in {'github_reader', 'weather_api'}
+        )
+        if result_is_untrusted and result.get('status') != 'error' and not result.get('isError'):
             self.taint_engine.mark_tainted(session_id, tool_name, tool_call_id, tool_result_fields)
             self._log('taint_updated', session_id,
                       'Session tainted by low-trust tool result',

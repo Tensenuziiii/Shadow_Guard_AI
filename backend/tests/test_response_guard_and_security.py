@@ -64,7 +64,7 @@ class TestResponseGuard:
         tool_meta = {'trust_zone': 'HIGH'}
         raw_result = {
             'status': 'ok',
-            'api_key': 'sk-proj-supersecret1234567890',
+            'api_key': 'YOUR_API_KEY_HERE',
             'token': 'bearer-jwt-token-val',
             'nested': {
                 'password': 'verysecretpassword',
@@ -77,7 +77,7 @@ class TestResponseGuard:
 
         assert guarded.redacted_secrets_count > 0
         data = guarded.sanitized_data
-        assert 'supersecret' not in json.dumps(data)
+        assert 'YOUR_API_KEY_HERE' not in json.dumps(data)
         assert 'verysecretpassword' not in json.dumps(data)
         assert data['safe_field'] == 'hello world'
         assert data['provenance']['secrets_redacted'] == guarded.redacted_secrets_count

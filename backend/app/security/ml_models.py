@@ -334,9 +334,13 @@ class MLModelRuntime:
         try:
             probabilities = self.trust_model.predict_proba([features])[0]
             classes = list(self.trust_model.classes_)
+            predicted_index = max(
+                range(len(classes)),
+                key=lambda index: float(probabilities[index]),
+            )
             high_probability = float(probabilities[classes.index('HIGH_TRUST')])
             score = round(min(100.0, max(0.0, high_probability * 100.0)), 2)
-            prediction = str(self.trust_model.predict([features])[0])
+            prediction = str(classes[predicted_index])
             if prediction not in TRUST_CLASSES or not math.isfinite(score):
                 raise ValueError('invalid trust prediction')
             return {

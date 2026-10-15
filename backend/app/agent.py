@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any
 
 import httpx
@@ -9,7 +11,8 @@ from pydantic_ai.exceptions import ModelHTTPError, UserError
 from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from app.config import MODEL_NAME, OPENAI_API_KEY, OPENROUTER_API_KEY
+from app.config import GITHUB_REPOSITORY, MODEL_NAME, OPENAI_API_KEY, OPENROUTER_API_KEY
+from app.mcp_server import DEFAULT_GITHUB_PATH
 from app.security.response_synthesizer import synthesize_error
 
 
@@ -112,7 +115,8 @@ def build_agent(interceptor: Any) -> Agent[dict[str, Any], str]:
         if not ctx.tool_call_id:
             raise RuntimeError('Guarded tool invocation is missing its provider tool-call id.')
         tool_call_id = ctx.tool_call_id
-        result = interceptor.execute(
+        result = await asyncio.to_thread(
+            interceptor.execute,
             tool_name,
             arguments,
             ctx.deps['session_id'],
@@ -127,8 +131,16 @@ def build_agent(interceptor: Any) -> Agent[dict[str, Any], str]:
             raise PendingApprovalRequested(result['approval_id'], tool_call_id, tool_name)
         return result
 
-    async def guarded_github_reader(ctx: RunContext[dict[str, Any]], repo: str = 'demo') -> dict[str, Any]:
-        return await call_guarded_tool(ctx, 'github_reader', {'repo': repo})
+    async def guarded_github_reader(
+        ctx: RunContext[dict[str, Any]],
+        repo: str = GITHUB_REPOSITORY,
+        path: str = DEFAULT_GITHUB_PATH,
+    ) -> dict[str, Any]:
+        return await call_guarded_tool(
+            ctx,
+            'github_reader',
+            {'repo': repo, 'path': path},
+        )
 
     async def guarded_weather(ctx: RunContext[dict[str, Any]], city: str = 'Seattle') -> dict[str, Any]:
         return await call_guarded_tool(ctx, 'weather_api', {'city': city})

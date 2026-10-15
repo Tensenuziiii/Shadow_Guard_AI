@@ -389,14 +389,34 @@ class ApprovalManager:
                 finally:
                     real_db.close()
             else:
-                expected_arguments = {'repo'} if row['tool_name'] == 'github_reader' else {'city'}
-                parameter_value = action_arguments.get(next(iter(expected_arguments))) if isinstance(action_arguments, dict) else None
+                if row['tool_name'] == 'github_reader':
+                    valid_arguments = (
+                        isinstance(action_arguments, dict)
+                        and set(action_arguments) in ({'repo'}, {'repo', 'path'})
+                    )
+                    parameter_value = action_arguments.get('repo') if valid_arguments else None
+                    path = action_arguments.get('path') if valid_arguments else None
+                    path_valid = (
+                        path is None
+                        or isinstance(path, str)
+                        and bool(path)
+                        and len(path) <= 512
+                        and not path.startswith('/')
+                        and all(part not in {'', '.', '..'} for part in path.split('/'))
+                    )
+                else:
+                    valid_arguments = (
+                        isinstance(action_arguments, dict)
+                        and set(action_arguments) == {'city'}
+                    )
+                    parameter_value = action_arguments.get('city') if valid_arguments else None
+                    path_valid = True
                 if (
                     not taint_override_required
-                    or not isinstance(action_arguments, dict)
-                    or set(action_arguments) != expected_arguments
+                    or not valid_arguments
                     or not isinstance(parameter_value, str)
                     or len(parameter_value) > 256
+                    or not path_valid
                     or raw_tools is None
                     or not callable(raw_tools.get(row['tool_name']))
                 ):

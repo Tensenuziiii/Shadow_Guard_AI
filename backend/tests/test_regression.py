@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sqlite3
 import tempfile
@@ -159,6 +160,15 @@ class TestShadowStateFixes:
             count = conn.execute('SELECT COUNT(*) FROM users').fetchone()[0]
         assert count == 3, 'Simulation must not modify the real production database'
 
+    def test_streaming_snapshot_fingerprint_matches_legacy_digest(self, temp_dbs):
+        _, production_db = temp_dbs
+        manager = ShadowStateManager(production_db)
+        with sqlite3.connect(production_db) as conn:
+            legacy = hashlib.sha256(
+                '\n'.join(conn.iterdump()).encode('utf-8')
+            ).hexdigest()
+            assert manager.snapshot_fingerprint(conn) == legacy
+
 
 # ---------------------------------------------------------------------------
 # Bug 4: BOM in cleanup_script.sql caused UNSUPPORTED_STATEMENT
@@ -167,8 +177,8 @@ class TestShadowStateFixes:
 class TestGithubReaderBomFix:
     def test_github_reader_script_has_no_bom(self):
         """Regression: reading with utf-8 kept the BOM, breaking analyze_sql."""
-        from app.mcp_server import github_reader
-        result = github_reader()
+        from app.mcp_server import github_reader_fixture
+        result = github_reader_fixture()
         script = result['script']
         assert not script.startswith('\ufeff'), (
             'github_reader script must not start with a UTF-8 BOM character'
@@ -176,9 +186,9 @@ class TestGithubReaderBomFix:
 
     def test_github_reader_script_sql_is_parseable(self):
         """The script contains multiple statements (correctly blocked by policy)."""
-        from app.mcp_server import github_reader
+        from app.mcp_server import github_reader_fixture
         import sqlparse
-        result = github_reader()
+        result = github_reader_fixture()
         script = result['script'].strip()
         # With BOM gone the script should be parseable (even if multi-statement)
         stmts = sqlparse.parse(script)

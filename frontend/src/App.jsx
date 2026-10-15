@@ -3,6 +3,7 @@ import {
   Activity,
   AlertOctagon,
   ArrowUpRight,
+  Bell,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -21,6 +22,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Sparkles,
+  Sun,
   Thermometer,
   X,
   Zap,
@@ -316,11 +318,11 @@ function App() {
     setConfirmAction({ approval, decision, options })
   }
 
-  async function confirmApprovalDecision() {
+  async function confirmApprovalDecision(operatorToken) {
     if (!confirmAction) return
     const { approval, decision, options } = confirmAction
     setConfirmAction(null)
-    await decideApproval(approval, decision, options)
+    await decideApproval(approval, decision, options, operatorToken)
   }
 
   useEffect(() => {
@@ -403,12 +405,13 @@ function App() {
     }
   }
 
-  async function decideApproval(approval, decision, options = {}) {
+  async function decideApproval(approval, decision, options = {}, operatorToken) {
     setError('')
     setWorkingApproval(approval.id)
     try {
       const result = await request(`/approvals/${approval.id}/decision`, {
         method: 'POST',
+        headers: { Authorization: `Bearer ${operatorToken}` },
         body: JSON.stringify({
           decision,
           session_id: approval.session_id,
@@ -505,7 +508,7 @@ function App() {
             >
               <Icon size={17} />
               <span>{label}</span>
-              {count > 0 && <span className="nav-count">{count}</span>}
+              {count !== undefined && <span className="nav-count">{count}</span>}
             </button>
           ))}
         </nav>
@@ -524,17 +527,33 @@ function App() {
       </aside>
 
       <main className="main-area">
+        <svg className="ambient-ribbon" viewBox="0 0 520 300" fill="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="ribbon-pearl" x1="48" y1="220" x2="452" y2="70" gradientUnits="userSpaceOnUse">
+              <stop stopColor="#A7F3E5" stopOpacity=".05" />
+              <stop offset=".48" stopColor="#B9B2FF" stopOpacity=".78" />
+              <stop offset="1" stopColor="#9AD4FF" stopOpacity=".2" />
+            </linearGradient>
+            <linearGradient id="ribbon-glow" x1="110" y1="244" x2="464" y2="66" gradientUnits="userSpaceOnUse">
+              <stop stopColor="#8DE5D6" stopOpacity=".12" />
+              <stop offset=".55" stopColor="#D1B9FF" stopOpacity=".86" />
+              <stop offset="1" stopColor="#A4C8FF" stopOpacity=".1" />
+            </linearGradient>
+            <filter id="ribbon-blur" x="0" y="0" width="520" height="300" filterUnits="userSpaceOnUse">
+              <feGaussianBlur stdDeviation="8" />
+            </filter>
+          </defs>
+          <path d="M66 228C154 66 257 32 362 85c70 36 38 112-26 87-47-18-18-70 30-64 49 7 89 51 75 91-16 45-81 55-142 35" stroke="url(#ribbon-glow)" strokeWidth="26" strokeLinecap="round" filter="url(#ribbon-blur)" />
+          <path d="M66 228C154 66 257 32 362 85c70 36 38 112-26 87-47-18-18-70 30-64 49 7 89 51 75 91-16 45-81 55-142 35" stroke="url(#ribbon-pearl)" strokeWidth="9" strokeLinecap="round" />
+          <path d="M108 248c86-87 155-158 231-150 44 5 47 45 18 54-26 8-44-18-29-35" stroke="white" strokeOpacity=".52" strokeWidth="2" strokeLinecap="round" />
+        </svg>
         <header className="topbar">
-          <div className="breadcrumbs">
-            <span>Workspace</span><span className="crumb-separator">/</span>
-            <strong>{navItems.find((item) => item.id === activeView)?.label}</strong>
-          </div>
           <div className="topbar-right">
             <label className="global-search">
               <Search size={15} aria-hidden="true" />
               <input
                 aria-label={`Search ${navItems.find((item) => item.id === activeView)?.label || 'workspace'}`}
-                placeholder="Search tools, events, actions…"
+                placeholder="Search tools, events, or actions..."
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
               />
@@ -548,8 +567,12 @@ function App() {
               <StatusDot online={health === 'online'} />
               <span>{health === 'online' ? 'Gateway operational' : health === 'checking' ? 'Gateway connecting' : 'API offline'}</span>
             </div>
-            <button className="refresh-button" onClick={refreshDashboard} title="Refresh dashboard">
-              <RefreshCw size={15} /><span>Refresh</span>
+            <button className="topbar-icon-button notification-button" type="button" aria-label="Notifications">
+              <Bell size={16} />
+              {pendingCount > 0 && <i aria-hidden="true" />}
+            </button>
+            <button className="topbar-icon-button theme-button" type="button" aria-label="Theme">
+              <Sun size={16} />
             </button>
             <div className="top-avatar">DG</div>
           </div>
@@ -568,15 +591,11 @@ function App() {
             <>
               <div className="page-heading">
                 <div>
-                  <div className="eyebrow"><span className="eyebrow-line" /> LIVE SECURITY POSTURE</div>
+                  <div className="eyebrow"><span className="eyebrow-line" /> REAL-TIME MONITORING</div>
                   <h1>Good afternoon, operator <span className="heading-spark" aria-hidden="true">👋</span></h1>
                   <p>Monitor your AI agents, integrations, and protected actions in one place.</p>
                 </div>
                 <div className="heading-actions">
-                  <span className={cx('session-chip', sessionState === 'TAINTED' && 'session-chip-tainted')}>
-                    {sessionState === 'TAINTED' ? <ShieldAlert size={14} /> : <ShieldCheck size={14} />}
-                    {sessionId ? `${sessionState} SESSION` : 'NEW SESSION'}
-                  </span>
                   <button className="button-secondary" onClick={startNewSession} disabled={busy}>
                     <RefreshCw size={14} /> Clean session
                   </button>
@@ -587,10 +606,10 @@ function App() {
               </div>
 
               <section className="metric-grid" aria-label="Security summary">
-                <MetricCard icon={ShieldCheck} label="Gateway status" value={health === 'online' ? 'Online' : health === 'checking' ? 'Connecting' : 'Offline'} foot={health === 'online' ? 'Health endpoint responding' : 'Gateway health unavailable'} tone="green" />
-                <MetricCard icon={LockKeyhole} label="Pending approvals" value={pendingCount} foot={pendingCount ? 'Needs operator review' : 'No actions waiting'} tone={pendingCount ? 'amber' : 'green'} />
-                <MetricCard icon={ShieldAlert} label="Blocked decisions" value={blockedCount} foot="In the recent gateway event feed" tone="blue" />
-                <MetricCard icon={Radio} label="Live event stream" value={socketStatus === 'live' ? 'Connected' : socketStatus === 'connecting' || socketStatus === 'reconnecting' ? 'Reconnecting' : 'Offline'} foot={socketStatus === 'live' ? `${events.length} recent events` : 'Live updates unavailable'} tone={socketStatus === 'live' ? 'green' : 'amber'} />
+                <MetricCard icon={ShieldCheck} label="Gateway status" value={health === 'online' ? 'Protected' : health === 'checking' ? 'Connecting' : 'Offline'} foot={health === 'online' ? 'Policy enforcement active' : 'Gateway health unavailable'} tone="green" />
+                <MetricCard icon={LockKeyhole} label="Pending approvals" value={pendingCount} foot={pendingCount ? 'Needs operator review' : 'No actions waiting'} tone="amber" />
+                <MetricCard icon={ShieldAlert} label="Blocked decisions" value={blockedCount} foot="In the recent gateway event feed" tone="red" />
+                <MetricCard icon={Radio} label="Live event stream" value={socketStatus === 'live' ? 'Connected' : socketStatus === 'connecting' || socketStatus === 'reconnecting' ? 'Reconnecting' : 'Offline'} foot={socketStatus === 'live' ? `${events.length} recent events` : 'Live updates unavailable'} tone="violet" />
               </section>
 
               <div className="dashboard-grid">
@@ -796,15 +815,33 @@ function App() {
 }
 
 function MetricCard({ icon: Icon, label, value, foot, tone }) {
+  const isLongValue = String(value).length > 9
+  const gradientId = `spark-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
+  const sparkline = tone === 'green'
+    ? 'M0 42 C18 40 23 34 38 36 S61 26 77 31 S101 27 116 20 S140 32 156 23 S180 28 198 10'
+    : tone === 'amber'
+      ? 'M0 43 C18 39 25 35 40 37 S61 32 78 34 S102 23 119 25 S140 16 157 20 S180 13 198 5'
+      : tone === 'red'
+        ? 'M0 42 C18 41 25 36 41 38 S61 28 78 33 S101 29 117 23 S140 29 157 18 S180 15 198 4'
+        : 'M0 43 C18 38 25 40 40 34 S61 36 78 28 S101 31 118 22 S140 25 158 14 S181 19 198 3'
   return (
-    <article className="metric-card">
-      <div className={`metric-icon metric-${tone}`}><Icon size={17} /></div>
+    <article className={`metric-card metric-card-${tone}`}>
+      <div className={`metric-icon metric-${tone}`}><Icon size={21} /></div>
       <div className="metric-content">
         <span className="metric-label">{label}</span>
-        <strong>{value}</strong>
+        <strong className={isLongValue ? 'metric-value-long' : undefined}>{value}</strong>
         <small>{foot}</small>
       </div>
-      <div className={`metric-accent accent-${tone}`} />
+      <svg className="metric-sparkline" viewBox="0 0 200 50" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <linearGradient id={gradientId} x1="100" y1="0" x2="100" y2="50" gradientUnits="userSpaceOnUse">
+            <stop stopColor="currentColor" stopOpacity=".42" />
+            <stop offset="1" stopColor="currentColor" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <path className="spark-area" d={`${sparkline} L198 50 L0 50 Z`} fill={`url(#${gradientId})`} />
+        <path className="spark-line" d={sparkline} />
+      </svg>
     </article>
   )
 }
@@ -1098,6 +1135,7 @@ function EmptyState({ title, detail, large = false }) {
 }
 
 function ConfirmationDialog({ approval, decision, busy, onCancel, onConfirm }) {
+  const [operatorToken, setOperatorToken] = useState('')
   const isApprove = decision === 'approve'
   useEffect(() => {
     function onKeyDown(event) {
@@ -1125,9 +1163,21 @@ function ConfirmationDialog({ approval, decision, busy, onCancel, onConfirm }) {
           <span>{prettyName(approval.tool_name || 'Protected action')}</span>
           <strong>{approval.operation || approval.target_resource || approval.sql_text || 'Staged operation'}</strong>
         </div>
+        <label className="operator-token-field">
+          <span>Approval operator token</span>
+          <input
+            type="password"
+            autoComplete="new-password"
+            value={operatorToken}
+            onChange={(event) => setOperatorToken(event.target.value)}
+            aria-required="true"
+            placeholder="Enter the token configured in backend/.env"
+          />
+          <small>Sent only with this decision and kept in memory for this dialog.</small>
+        </label>
         <div className="dialog-actions">
           <button className="button-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
-          <button className={isApprove ? 'button-approve' : 'button-reject'} onClick={onConfirm} disabled={busy}>
+          <button className={isApprove ? 'button-approve' : 'button-reject'} onClick={() => onConfirm(operatorToken)} disabled={busy || !operatorToken.trim()}>
             {busy ? <LoaderCircle size={15} className="spin" /> : isApprove ? <Check size={15} /> : <X size={15} />}
             {isApprove ? 'Confirm approval' : 'Confirm rejection'}
           </button>

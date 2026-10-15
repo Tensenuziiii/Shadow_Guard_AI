@@ -23,6 +23,11 @@ from app.security.registry import TrustRegistry
 from app.security.risk_engine import analyze_sql
 from app.security.shadow_state import ShadowStateManager
 from app.security.taint import TaintEngine
+import app.security.operator_auth as operator_auth
+
+
+OPERATOR_TOKEN = 'test-approval-operator-token-with-at-least-32-bytes'
+OPERATOR_HEADERS = {'Authorization': f'Bearer {OPERATOR_TOKEN}'}
 
 
 @pytest.fixture
@@ -76,6 +81,24 @@ def test_approval_requires_matching_user_and_unchanged_full_snapshot(database_pa
     stale = manager.decide(approval_id, 'approve', 'session-1', 'user-1', production_db)
     assert stale['status'] == 'CANCELLED'
     assert stale['policy_code'] == 'SNAPSHOT_CHANGED'
+    assert count_users(production_db) == 2
+
+
+def test_approval_expires_and_cannot_be_replayed(database_paths):
+    app_db, production_db = database_paths
+    manager, approval_id = stage_delete(app_db, production_db)
+    with sqlite3.connect(app_db) as conn:
+        conn.execute(
+            'UPDATE approvals SET expires_at = ? WHERE id = ?',
+            ('2000-01-01T00:00:00+00:00', approval_id),
+        )
+
+    expired = manager.decide(approval_id, 'approve', 'session-1', 'user-1', production_db)
+    replay = manager.decide(approval_id, 'approve', 'session-1', 'user-1', production_db)
+
+    assert expired['status'] == 'EXPIRED'
+    assert expired['policy_code'] == 'APPROVAL_EXPIRED'
+    assert replay['policy_code'] == 'APPROVAL_ALREADY_RESOLVED'
     assert count_users(production_db) == 2
 
 
@@ -239,6 +262,7 @@ def test_agent_resume_context_is_not_exposed_in_pending_approval_payload(databas
 
 
 def test_chat_pending_action_resumes_after_real_approval(database_paths, monkeypatch):
+    monkeypatch.setattr(operator_auth, 'APPROVAL_OPERATOR_TOKEN', OPERATOR_TOKEN)
     app_db, production_db = database_paths
     taint = TaintEngine(app_db)
     audit = AuditLogger(app_db)
@@ -288,7 +312,7 @@ def test_chat_pending_action_resumes_after_real_approval(database_paths, monkeyp
         'interceptor': interceptor,
     }
 
-    with TestClient(app) as client:
+    with TestClient(app, headers=OPERATOR_HEADERS) as client:
         pending = client.post(
             '/api/chat',
             json={'message': 'Delete user 1', 'user_id': 'user-1'},
@@ -374,6 +398,7 @@ def test_chat_reports_the_exact_action_and_reason_when_policy_blocks_it(database
 def test_approved_action_is_not_repeated_when_assistant_continuation_fails(
     database_paths, monkeypatch
 ):
+    monkeypatch.setattr(operator_auth, 'APPROVAL_OPERATOR_TOKEN', OPERATOR_TOKEN)
     app_db, production_db = database_paths
     taint = TaintEngine(app_db)
     audit = AuditLogger(app_db)
@@ -431,7 +456,7 @@ def test_approved_action_is_not_repeated_when_assistant_continuation_fails(
         'interceptor': interceptor,
     }
 
-    with TestClient(app) as client:
+    with TestClient(app, headers=OPERATOR_HEADERS) as client:
         pending_response = client.post(
             '/api/chat',
             json={'message': 'Delete user 1', 'user_id': 'user-1'},

@@ -26,8 +26,12 @@ class ShadowStateManager:
         close_connection = conn is None
         conn = conn or sqlite3.connect(self.db_path)
         try:
-            payload = '\n'.join(conn.iterdump())
-            return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+            digest = hashlib.sha256()
+            for index, statement in enumerate(conn.iterdump()):
+                if index:
+                    digest.update(b'\n')
+                digest.update(statement.encode('utf-8'))
+            return digest.hexdigest()
         finally:
             if close_connection:
                 conn.close()
@@ -39,17 +43,17 @@ class ShadowStateManager:
     def _connect_shadow(self) -> tuple[sqlite3.Connection, str]:
         """
         Return ``(shadow_conn, fingerprint)`` where shadow_conn is an
-        in-memory clone of the production database.  The fingerprint is
-        computed on the production connection *before* cloning so it
-        represents the authoritative pre-execution state.
+        in-memory clone of the production database. The fingerprint is
+        computed from the completed clone, so it describes exactly the state
+        that the simulation evaluated.
         """
         prod = sqlite3.connect(self.db_path)
         try:
-            fingerprint = self.snapshot_fingerprint(prod)
             shadow = sqlite3.connect(':memory:')
             prod.backup(shadow)
         finally:
             prod.close()
+        fingerprint = self.snapshot_fingerprint(shadow)
         return shadow, fingerprint
 
     # ------------------------------------------------------------------
@@ -57,21 +61,24 @@ class ShadowStateManager:
     # ------------------------------------------------------------------
 
     def _samples_for_tables(
-        self, conn: sqlite3.Connection, tables: list[str], limit: int = 5
+        self,
+        conn: sqlite3.Connection,
+        tables: list[str],
+        limit: int = 5,
+        columns_by_table: dict[str, list[str]] | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         samples: dict[str, list[dict[str, Any]]] = {}
         for table in tables:
-            try:
-                rows = conn.execute(f'SELECT * FROM "{table}" LIMIT {limit}').fetchall()
-                # PRAGMA table_info returns (cid, name, type, notnull, dflt_value, pk).
-                # Column name is at index 1, not 0.
+            rows = conn.execute(f'SELECT * FROM "{table}" LIMIT {limit}').fetchall()
+            columns = columns_by_table.get(table) if columns_by_table is not None else None
+            if columns is None:
                 columns = [
                     desc[1]
                     for desc in conn.execute(f'PRAGMA table_info("{table}")').fetchall()
                 ]
-                samples[table] = [dict(zip(columns, row)) for row in rows]
-            except sqlite3.Error:
-                samples[table] = []
+                if columns_by_table is not None:
+                    columns_by_table[table] = columns
+            samples[table] = [dict(zip(columns, row)) for row in rows]
         return samples
 
     def _count_tables(
@@ -79,12 +86,9 @@ class ShadowStateManager:
     ) -> dict[str, int]:
         counts: dict[str, int] = {}
         for table in tables:
-            try:
-                counts[table] = conn.execute(
-                    f'SELECT COUNT(*) FROM "{table}"'
-                ).fetchone()[0]
-            except sqlite3.Error:
-                counts[table] = 0
+            counts[table] = conn.execute(
+                f'SELECT COUNT(*) FROM "{table}"'
+            ).fetchone()[0]
         return counts
 
     # ------------------------------------------------------------------
@@ -128,7 +132,12 @@ class ShadowStateManager:
         shadow, fingerprint = self._connect_shadow()
         try:
             tables = risk['tables'] or []
-            before = self._samples_for_tables(shadow, tables)
+            columns_by_table: dict[str, list[str]] = {}
+            before = self._samples_for_tables(
+                shadow,
+                tables,
+                columns_by_table=columns_by_table,
+            )
             # Count rows BEFORE execution — this is the denominator for blast-radius %.
             before_counts = self._count_tables(shadow, tables)
             total_before = sum(before_counts.values())
@@ -157,7 +166,11 @@ class ShadowStateManager:
                     'zero_row_reason': None,
                 }
 
-            after = self._samples_for_tables(shadow, tables)
+            after = self._samples_for_tables(
+                shadow,
+                tables,
+                columns_by_table=columns_by_table,
+            )
             after_counts = self._count_tables(shadow, tables)
             total_after = sum(after_counts.values())
 

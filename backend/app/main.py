@@ -10,9 +10,9 @@ from app.api.approvals import router as approvals_router
 from app.api.chat import router as chat_router
 from app.api.events import EventHub
 from app.api.integrations import router as integrations_router
-from app.config import DB_PATH, FRONTEND_ORIGIN, PRODUCTION_DB_PATH
+from app.config import DB_PATH, FRONTEND_ORIGIN, GITHUB_REPOSITORY, PRODUCTION_DB_PATH
 from app.database import ensure_production_demo_db, initialize_database
-from app.mcp_server import github_reader, production_database, weather_api
+from app.mcp_server import RemoteIntegrations, production_database
 from app.security.approvals import ApprovalManager
 from app.security.audit import AuditLogger
 from app.security.interceptor import ShadowGuardInterceptor
@@ -26,18 +26,20 @@ def configure_app_state(app: FastAPI):
     initialize_database(str(DB_PATH))
     ensure_production_demo_db()
     ml_models = get_ml_models()
+    integrations = RemoteIntegrations()
     app.state.db_path = str(DB_PATH)
     app.state.production_db_path = str(PRODUCTION_DB_PATH)
     app.state.event_hub = EventHub()
     app.state.ml_models = ml_models
+    app.state.integrations = integrations
     app.state.trust_registry = TrustRegistry(str(DB_PATH), ml_models=ml_models)
     app.state.taint_engine = TaintEngine(str(DB_PATH))
     app.state.audit_logger = AuditLogger(str(DB_PATH))
     app.state.shadow_state = ShadowStateManager(str(PRODUCTION_DB_PATH))
     app.state.approval_manager = ApprovalManager(str(DB_PATH))
     app.state.raw_tools = {
-        'github_reader': github_reader,
-        'weather_api': weather_api,
+        'github_reader': integrations.github_reader,
+        'weather_api': integrations.weather_api,
         'production_database': lambda sql: production_database(sql, _guarded=True),
     }
     app.state.interceptor = ShadowGuardInterceptor(
@@ -61,13 +63,17 @@ def configure_app_state(app: FastAPI):
         'interceptor': app.state.interceptor,
         'raw_tools': app.state.raw_tools,
         'ml_models': ml_models,
+        'integrations': integrations,
     }
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_app_state(app)
-    yield
+    try:
+        yield
+    finally:
+        app.state.integrations.close()
 
 
 app = FastAPI(title='ShadowGuard AI', lifespan=lifespan)
@@ -113,7 +119,12 @@ def list_traces(session_id: str | None = None, limit: int = 20):
 @app.post('/api/demo/scenario-a')
 def scenario_a():
     session_id = app.state.taint_engine.get_or_create_session(None, 'demo-user')
-    app.state.interceptor.execute('github_reader', {'repo': 'demo'}, session_id, 'demo-user')
+    app.state.interceptor.execute(
+        'github_reader',
+        {'repo': GITHUB_REPOSITORY},
+        session_id,
+        'demo-user',
+    )
     staged = app.state.interceptor.execute('production_database', {'sql': 'DELETE FROM users WHERE id = 1'}, session_id, 'demo-user')
     return {'session_id': session_id, 'result': staged, 'state': app.state.taint_engine.current_state(session_id)}
 

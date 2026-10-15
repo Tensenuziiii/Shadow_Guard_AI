@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest, ToolReturnPart
 
 from app.agent import PendingApprovalRequested, build_agent, get_agent_error_details
 from app.schemas import ApprovalDecisionRequest
+from app.security.operator_auth import require_approval_operator
 
 router = APIRouter(prefix='/api')
 logger = logging.getLogger(__name__)
@@ -19,7 +20,10 @@ def list_pending(request: Request):
     return {'approvals': rows}
 
 
-@router.post('/approvals/{approval_id}/decision')
+@router.post(
+    '/approvals/{approval_id}/decision',
+    dependencies=[Depends(require_approval_operator)],
+)
 async def decide_approval(approval_id: str, payload: ApprovalDecisionRequest, request: Request):
     app_state = request.app.state.app_state
     manager = app_state['approval_manager']
