@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
   AlertOctagon,
-  ArrowDown,
   ArrowUpRight,
   Check,
   CheckCircle2,
@@ -16,6 +15,7 @@ import {
   MessageSquare,
   Radio,
   RefreshCw,
+  Search,
   Send,
   Shield,
   ShieldAlert,
@@ -58,13 +58,34 @@ function formatTime(value) {
   }).format(date)
 }
 
+function formatModelScore(value) {
+  const score = Number(value)
+  return value === null || value === undefined || !Number.isFinite(score)
+    ? 'Unavailable'
+    : `${score.toFixed(1)}/100`
+}
+
 function prettyName(value = '') {
   return value.replaceAll('_', ' ')
 }
 
 function TrustBadge({ zone }) {
   const level = (zone || 'unknown').toLowerCase()
-  return <span className={`trust-badge trust-${level}`}>{zone || 'UNKNOWN'}</span>
+  return <span className={`trust-badge trust-${level}`}>{zone || 'NOT SET'}</span>
+}
+
+function ClassificationBadge({ classification }) {
+  const known = ['HIGH_TRUST', 'LOW_TRUST'].includes(classification)
+  return (
+    <span className={cx(
+      'classification-badge',
+      classification === 'HIGH_TRUST' && 'classification-high',
+      classification === 'LOW_TRUST' && 'classification-low',
+      !known && 'classification-unknown',
+    )}>
+      {known ? classification : 'UNAVAILABLE'}
+    </span>
+  )
 }
 
 function StatusDot({ online }) {
@@ -140,6 +161,7 @@ function App() {
   const [integrations, setIntegrations] = useState([])
   const [approvals, setApprovals] = useState([])
   const [events, setEvents] = useState([])
+  const [dataLoaded, setDataLoaded] = useState(false)
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
@@ -154,6 +176,11 @@ function App() {
   const [error, setError] = useState('')
   const [workingApproval, setWorkingApproval] = useState('')
   const [savingIntegration, setSavingIntegration] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [integrationFilter, setIntegrationFilter] = useState('ALL')
+  const [eventTypeFilter, setEventTypeFilter] = useState('ALL')
+  const [confirmAction, setConfirmAction] = useState(null)
+  const [toast, setToast] = useState('')
   const chatEndRef = useRef(null)
 
   const refreshDashboard = useCallback(async () => {
@@ -174,6 +201,7 @@ function App() {
     if (eventsResult.status === 'fulfilled') {
       setEvents(eventsResult.value.events || [])
     }
+    setDataLoaded(true)
     const failed = results.find((result) => result.status === 'rejected')
     if (failed) setError(failed.reason.message)
     else setError('')
@@ -236,10 +264,70 @@ function App() {
 
   const pendingCount = approvals.length
   const blockedCount = useMemo(
-    () => events.filter((event) => event.event_type === 'taint_blocked').length,
+    () => events.filter((event) =>
+      ['taint_blocked', 'security_error'].includes(event.event_type),
+    ).length,
     [events],
   )
-  const latestEvent = events[events.length - 1]
+  const normalizedSearch = searchQuery.trim().toLowerCase()
+  const filteredIntegrations = integrations.filter((integration) => {
+    const matchesFilter = integrationFilter === 'ALL'
+      || integration.trust_classification === integrationFilter
+    const matchesSearch = !normalizedSearch
+      || `${integration.name} ${integration.description || ''} ${integration.trust_zone || ''} ${integration.trust_classification || ''} ${integration.ml_classification || ''}`
+        .toLowerCase().includes(normalizedSearch)
+    return matchesFilter && matchesSearch
+  })
+  const filteredApprovals = approvals.filter((approval) =>
+    !normalizedSearch
+    || `${approval.tool_name || ''} ${approval.sql_text || ''} ${approval.user_objective || ''} ${approval.target_resource || ''} ${approval.operation || ''} ${approval.staged_json || ''}`
+      .toLowerCase().includes(normalizedSearch),
+  )
+  const filteredEvents = [...events].reverse().filter((event) => {
+    const detailText = JSON.stringify(event.details || {})
+    const matchesSearch = !normalizedSearch
+      || `${event.event_type || ''} ${event.summary || ''} ${event.tool_name || ''} ${event.policy_code || ''} ${detailText}`
+        .toLowerCase().includes(normalizedSearch)
+    const matchesType = eventTypeFilter === 'ALL'
+      || (eventTypeFilter === 'BLOCKED' && ['taint_blocked', 'security_error'].includes(event.event_type))
+      || (eventTypeFilter === 'APPROVAL' && event.event_type?.includes('approval'))
+      || (eventTypeFilter === 'INTENT' && event.event_type?.toLowerCase().includes('intent'))
+      || (eventTypeFilter === 'TRUST' && event.event_type?.toLowerCase().includes('trust'))
+      || (eventTypeFilter === 'OTHER'
+        && !['taint_blocked', 'security_error'].includes(event.event_type)
+        && !event.event_type?.includes('approval')
+        && !event.event_type?.toLowerCase().includes('intent')
+        && !event.event_type?.toLowerCase().includes('trust'))
+    return matchesSearch && matchesType
+  })
+
+  function startNewSession() {
+    setSessionId('')
+    setSessionState('CLEAN')
+    setMessages([{
+      role: 'assistant',
+      content: 'A new isolated session is ready. The backend will create it when you send your next request.',
+      time: new Date().toISOString(),
+    }])
+    setToast('Chat reset · backend session starts with your next request')
+  }
+
+  function requestApprovalDecision(approval, decision, options = {}) {
+    setConfirmAction({ approval, decision, options })
+  }
+
+  async function confirmApprovalDecision() {
+    if (!confirmAction) return
+    const { approval, decision, options } = confirmAction
+    setConfirmAction(null)
+    await decideApproval(approval, decision, options)
+  }
+
+  useEffect(() => {
+    if (!toast) return undefined
+    const timer = window.setTimeout(() => setToast(''), 3200)
+    return () => window.clearTimeout(timer)
+  }, [toast])
 
   async function sendMessage(text = draft) {
     const message = text.trim()
@@ -373,6 +461,7 @@ function App() {
       setIntegrations((current) =>
         current.map((item) => item.name === integration.name ? result.tool : item),
       )
+      setToast(`Trust zone saved for ${prettyName(integration.name)}`)
     } catch (requestError) {
       setError(requestError.message)
     } finally {
@@ -393,8 +482,8 @@ function App() {
         <a className="brand" href="#" onClick={() => setActiveView('overview')}>
           <span className="brand-mark"><Shield size={20} strokeWidth={2.2} /></span>
           <span className="brand-copy">
-            <strong>shadowguard</strong>
-            <small>SECURITY OPERATIONS</small>
+            <strong>ShadowGuard</strong>
+            <small>SECURITY GATEWAY</small>
           </span>
         </a>
 
@@ -410,6 +499,8 @@ function App() {
             <button
               className={cx('nav-item', activeView === id && 'nav-item-active')}
               key={id}
+              title={label}
+              aria-current={activeView === id ? 'page' : undefined}
               onClick={() => setActiveView(id)}
             >
               <Icon size={17} />
@@ -427,7 +518,7 @@ function App() {
           <div className="profile-row">
             <div className="avatar">DG</div>
             <div><strong>Demo operator</strong><small>Administrator</small></div>
-            <button className="icon-button profile-more" aria-label="Profile options"><ChevronDown size={16} /></button>
+            <button className="icon-button profile-more" aria-label="Operator profile options"><ChevronDown size={16} /></button>
           </div>
         </div>
       </aside>
@@ -439,9 +530,23 @@ function App() {
             <strong>{navItems.find((item) => item.id === activeView)?.label}</strong>
           </div>
           <div className="topbar-right">
+            <label className="global-search">
+              <Search size={15} aria-hidden="true" />
+              <input
+                aria-label={`Search ${navItems.find((item) => item.id === activeView)?.label || 'workspace'}`}
+                placeholder="Search tools, events, actions…"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+              />
+              {searchQuery && (
+                <button type="button" onClick={() => setSearchQuery('')} aria-label="Clear search">
+                  <X size={14} />
+                </button>
+              )}
+            </label>
             <div className="connection-state">
               <StatusDot online={health === 'online'} />
-              <span>Gateway {health === 'online' ? 'operational' : health === 'checking' ? 'connecting' : 'offline'}</span>
+              <span>{health === 'online' ? 'Gateway operational' : health === 'checking' ? 'Gateway connecting' : 'API offline'}</span>
             </div>
             <button className="refresh-button" onClick={refreshDashboard} title="Refresh dashboard">
               <RefreshCw size={15} /><span>Refresh</span>
@@ -457,31 +562,35 @@ function App() {
               <button className="icon-button" onClick={() => setError('')} aria-label="Dismiss error"><X size={16} /></button>
             </div>
           )}
+          {toast && <div className="toast-notice" role="status"><CheckCircle2 size={16} />{toast}</div>}
 
           {activeView === 'overview' && (
             <>
               <div className="page-heading">
                 <div>
                   <div className="eyebrow"><span className="eyebrow-line" /> LIVE SECURITY POSTURE</div>
-                  <h1>Good afternoon, operator <span className="heading-spark">✳</span></h1>
+                  <h1>Good afternoon, operator <span className="heading-spark" aria-hidden="true">👋</span></h1>
                   <p>Monitor your AI agents, integrations, and protected actions in one place.</p>
                 </div>
                 <div className="heading-actions">
                   <span className={cx('session-chip', sessionState === 'TAINTED' && 'session-chip-tainted')}>
                     {sessionState === 'TAINTED' ? <ShieldAlert size={14} /> : <ShieldCheck size={14} />}
-                    {sessionState} SESSION
+                    {sessionId ? `${sessionState} SESSION` : 'NEW SESSION'}
                   </span>
-                  <button className="button-secondary" onClick={() => runScenario('a')} disabled={busy}>
+                  <button className="button-secondary" onClick={startNewSession} disabled={busy}>
+                    <RefreshCw size={14} /> Clean session
+                  </button>
+                  <button className="button-secondary button-primary" onClick={() => runScenario('a')} disabled={busy}>
                     <Sparkles size={15} /> Run demo scenario
                   </button>
                 </div>
               </div>
 
               <section className="metric-grid" aria-label="Security summary">
-                <MetricCard icon={ShieldCheck} label="Gateway status" value={health === 'online' ? 'Protected' : health === 'checking' ? 'Connecting' : 'Offline'} foot="Policy enforcement active" tone="green" />
+                <MetricCard icon={ShieldCheck} label="Gateway status" value={health === 'online' ? 'Online' : health === 'checking' ? 'Connecting' : 'Offline'} foot={health === 'online' ? 'Health endpoint responding' : 'Gateway health unavailable'} tone="green" />
                 <MetricCard icon={LockKeyhole} label="Pending approvals" value={pendingCount} foot={pendingCount ? 'Needs operator review' : 'No actions waiting'} tone={pendingCount ? 'amber' : 'green'} />
-                <MetricCard icon={ShieldAlert} label="Blocked actions" value={blockedCount} foot="High-trust calls prevented" tone="blue" />
-                <MetricCard icon={Radio} label="Live event stream" value={socketStatus === 'live' ? 'Connected' : 'Reconnecting'} foot={events.length ? `${events.length} recent events` : 'Listening for activity'} tone={socketStatus === 'live' ? 'green' : 'amber'} />
+                <MetricCard icon={ShieldAlert} label="Blocked decisions" value={blockedCount} foot="In the recent gateway event feed" tone="blue" />
+                <MetricCard icon={Radio} label="Live event stream" value={socketStatus === 'live' ? 'Connected' : socketStatus === 'connecting' || socketStatus === 'reconnecting' ? 'Reconnecting' : 'Offline'} foot={socketStatus === 'live' ? `${events.length} recent events` : 'Live updates unavailable'} tone={socketStatus === 'live' ? 'green' : 'amber'} />
               </section>
 
               <div className="dashboard-grid">
@@ -489,7 +598,9 @@ function App() {
                   <div className="card-heading">
                     <div className="heading-icon mint-icon"><MessageSquare size={17} /></div>
                     <div><h2>Agent console</h2><p>Send a request through the guarded gateway</p></div>
-                    <span className="live-tag"><i /> LIVE</span>
+                    <span className={cx('live-tag', socketStatus !== 'live' && 'live-tag-offline')}>
+                      <i /> {socketStatus === 'live' ? 'LIVE' : socketStatus === 'connecting' || socketStatus === 'reconnecting' ? 'RECONNECTING' : 'OFFLINE'}
+                    </span>
                   </div>
                   <div className="chat-messages">
                     {messages.map((message, index) => (
@@ -539,7 +650,7 @@ function App() {
                 <section className="card posture-card">
                   <div className="card-heading">
                     <div className="heading-icon blue-icon"><ShieldCheck size={17} /></div>
-                    <div><h2>Trust posture</h2><p>Connected tool security zones</p></div>
+                    <div><h2>Trust posture</h2><p>Registered tools and security classifications</p></div>
                     <button className="text-link" onClick={() => setActiveView('integrations')}>Manage <ArrowUpRight size={13} /></button>
                   </div>
                   <div className="posture-summary">
@@ -550,18 +661,21 @@ function App() {
                     {integrations.map((integration) => (
                       <div className="integration-row" key={integration.name}>
                         <IntegrationIcon name={integration.name} />
-                        <div className="integration-info"><strong>{prettyName(integration.name)}</strong><small>{integration.enabled ? 'Connected · monitored' : 'Disabled'}</small></div>
-                        <TrustBadge zone={integration.trust_zone} />
+                        <div className="integration-info"><strong>{prettyName(integration.name)}</strong><small>{integration.enabled ? 'Enabled at gateway' : 'Disabled'}</small></div>
+                        <div className="posture-classification">
+                          <ClassificationBadge classification={integration.trust_classification} />
+                          <small>Zone <TrustBadge zone={integration.trust_zone} /></small>
+                        </div>
                       </div>
                     ))}
-                    {!integrations.length && <EmptyState title="No integrations loaded" detail="Check that the API is running, then refresh." />}
+                    {!integrations.length && <EmptyState title={dataLoaded ? 'No integrations loaded' : 'Loading integrations'} detail={dataLoaded ? 'Check that the API is running, then refresh.' : 'Fetching registered tools and trust evaluations.'} />}
                   </div>
                   <div className="posture-note"><LockKeyhole size={14} /><span>Destructive database changes require approval. High-trust actions in a tainted session are shown for review before execution.</span></div>
                 </section>
               </div>
 
               <div className="lower-grid">
-                <EventPanel events={events.slice(-5).reverse()} onOpen={() => setActiveView('events')} />
+                <EventPanel events={filteredEvents.slice(0, 5)} onOpen={() => setActiveView('events')} socketStatus={socketStatus} />
                 <section className="card quick-actions">
                   <div className="card-heading">
                     <div className="heading-icon amber-icon"><Zap size={17} /></div>
@@ -590,18 +704,20 @@ function App() {
               icon={LockKeyhole}
               count={pendingCount}
             >
-              {approvals.length ? (
+              {filteredApprovals.length ? (
                 <div className="approval-list">
-                  {approvals.map((approval) => (
+                  {filteredApprovals.map((approval) => (
                     <ApprovalCard
                       key={approval.id}
                       approval={approval}
                       busy={workingApproval === approval.id}
-                      onDecision={(decision, options) => decideApproval(approval, decision, options)}
+                      onDecision={(decision, options) => requestApprovalDecision(approval, decision, options)}
                     />
                   ))}
                 </div>
-              ) : <EmptyState title="All clear" detail="There are no protected actions waiting for approval." large />}
+              ) : approvals.length
+                ? <EmptyState title="No matching approvals" detail="Try a different search term." large />
+                : <EmptyState title={dataLoaded ? 'All clear' : 'Loading approval queue'} detail={dataLoaded ? 'There are no protected actions waiting for approval.' : 'Checking for pending protected actions.'} large />}
             </PageSection>
           )}
 
@@ -612,8 +728,21 @@ function App() {
               subtitle="Assign a trust zone to each tool. High-trust resources are protected from tainted sessions."
               icon={Zap}
             >
+              <div className="filter-toolbar" role="group" aria-label="Filter integrations by model classification">
+                {['ALL', 'HIGH_TRUST', 'LOW_TRUST'].map((filter) => (
+                  <button
+                    key={filter}
+                    className={cx('filter-chip', integrationFilter === filter && 'filter-chip-active')}
+                    aria-pressed={integrationFilter === filter}
+                    onClick={() => setIntegrationFilter(filter)}
+                  >
+                    {filter === 'ALL' ? 'All integrations' : filter.replace('_', ' ')}
+                    {filter === 'ALL' && <span>{integrations.length}</span>}
+                  </button>
+                ))}
+              </div>
               <div className="integration-cards">
-                {integrations.map((integration) => (
+                {filteredIntegrations.map((integration) => (
                   <IntegrationCard
                     key={integration.name}
                     integration={integration}
@@ -621,7 +750,7 @@ function App() {
                     onChange={(zone) => updateTrustZone(integration, zone)}
                   />
                 ))}
-                {!integrations.length && <EmptyState title="No integrations available" detail="The backend did not return any registered tools." large />}
+                {!filteredIntegrations.length && <EmptyState title={integrations.length ? 'No matching integrations' : dataLoaded ? 'No integrations available' : 'Loading integrations'} detail={integrations.length ? 'Try a different filter or search term.' : dataLoaded ? 'The backend did not return any registered tools.' : 'Fetching registered tools and trust evaluations.'} large />}
               </div>
               <div className="info-banner"><LockKeyhole size={16} /><span>Trust-zone changes are saved to the backend immediately. The gateway always applies session taint checks before a protected tool call.</span></div>
             </PageSection>
@@ -633,9 +762,17 @@ function App() {
               title="Security event stream"
               subtitle="Gateway policy decisions and integration activity from this runtime session."
               icon={Radio}
-              action={<span className="live-tag"><i /> {socketStatus === 'live' ? 'LIVE' : 'RECONNECTING'}</span>}
+              action={<span className={cx('live-tag', socketStatus !== 'live' && 'live-tag-offline')}><i /> {socketStatus === 'live' ? 'LIVE' : socketStatus === 'connecting' || socketStatus === 'reconnecting' ? 'RECONNECTING' : 'OFFLINE'}</span>}
             >
-              <EventPanel events={[...events].reverse()} expanded onRefresh={refreshDashboard} />
+              <EventPanel
+                events={filteredEvents}
+                expanded
+                onRefresh={refreshDashboard}
+                socketStatus={socketStatus}
+                eventTypeFilter={eventTypeFilter}
+                onEventTypeFilter={setEventTypeFilter}
+                dataLoaded={dataLoaded}
+              />
             </PageSection>
           )}
 
@@ -645,6 +782,15 @@ function App() {
           </footer>
         </div>
       </main>
+      {confirmAction && (
+        <ConfirmationDialog
+          approval={confirmAction.approval}
+          decision={confirmAction.decision}
+          busy={workingApproval === confirmAction.approval.id}
+          onCancel={() => setConfirmAction(null)}
+          onConfirm={confirmApprovalDecision}
+        />
+      )}
     </div>
   )
 }
@@ -668,7 +814,23 @@ function IntegrationIcon({ name }) {
   return <div className={`integration-icon ${name.includes('weather') ? 'weather-icon' : name.includes('database') ? 'database-icon' : ''}`}><Icon size={17} /></div>
 }
 
-function EventPanel({ events, onOpen, expanded = false, onRefresh }) {
+function EventPanel({
+  events,
+  onOpen,
+  expanded = false,
+  onRefresh,
+  socketStatus = 'offline',
+  eventTypeFilter = 'ALL',
+  onEventTypeFilter,
+  dataLoaded = true,
+}) {
+  const [autoScroll, setAutoScroll] = useState(true)
+  const eventListRef = useRef(null)
+  useEffect(() => {
+    if (expanded && autoScroll && eventListRef.current) {
+      eventListRef.current.scrollTop = 0
+    }
+  }, [autoScroll, events, expanded])
   return (
     <section className="card event-card">
       <div className="card-heading">
@@ -680,13 +842,41 @@ function EventPanel({ events, onOpen, expanded = false, onRefresh }) {
           <button className="text-link" onClick={onOpen}>View all <ArrowUpRight size={13} /></button>
         )}
       </div>
-      <div className="event-list">
+      {expanded && (
+        <div className="event-controls">
+          <label>
+            <span>Event type</span>
+            <select value={eventTypeFilter} onChange={(event) => onEventTypeFilter(event.target.value)}>
+              <option value="ALL">All events</option>
+              <option value="BLOCKED">Blocked decisions</option>
+              <option value="APPROVAL">Approvals</option>
+              <option value="INTENT">Intent</option>
+              <option value="TRUST">Trust</option>
+              <option value="OTHER">Other activity</option>
+            </select>
+          </label>
+          <span className={cx('stream-indicator', socketStatus === 'live' && 'stream-indicator-live')}>
+            <StatusDot online={socketStatus === 'live'} />
+            {socketStatus === 'live' ? 'Live connection' : socketStatus === 'connecting' || socketStatus === 'reconnecting' ? 'Reconnecting' : 'Disconnected'}
+          </span>
+          <label className="auto-scroll-control">
+            <input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} />
+            Auto-scroll
+          </label>
+        </div>
+      )}
+      <div className={cx('event-list', expanded && 'event-list-expanded')} ref={eventListRef}>
         {events.map((event) => (
           <EventRow event={event} key={event.event_id} />
         ))}
-        {!events.length && <EmptyState title="Waiting for activity" detail="Gateway decisions will appear here as they happen." />}
+        {!events.length && <EmptyState title={!dataLoaded ? 'Loading events' : expanded ? 'No matching events' : 'Waiting for activity'} detail={!dataLoaded ? 'Fetching recent gateway activity.' : expanded ? 'Adjust the filters or search, or refresh the event feed.' : 'Gateway decisions will appear here as they happen.'} />}
       </div>
-      {expanded && <div className="event-connection"><StatusDot online /><span>WebSocket connection {onRefresh ? 'active' : 'available'} · newest events appear first</span><ArrowDown size={13} /></div>}
+      {expanded && (
+        <div className="event-connection">
+          <span>{events.length} event{events.length === 1 ? '' : 's'} shown · newest first</span>
+          {onRefresh && <button className="text-link" onClick={onRefresh}><RefreshCw size={13} /> Refresh feed</button>}
+        </div>
+      )}
     </section>
   )
 }
@@ -696,12 +886,36 @@ function EventRow({ event }) {
   const approved = event.event_type?.includes('approval') && event.event_type !== 'approval_required'
   const tone = blocked ? 'event-red' : approved ? 'event-green' : event.event_type === 'approval_required' ? 'event-amber' : 'event-blue'
   const Icon = blocked ? ShieldAlert : approved ? CheckCircle2 : event.event_type === 'approval_required' ? Clock3 : Activity
+  const details = event.details || {}
+  const isTrustEvent = event.event_type === 'trust_evaluated'
+  const isIntentEvent = event.event_type?.includes('intent') || event.policy_code?.includes('INTENT')
+  const reasonCodes = details.reason_codes || details.trust_reason_codes || details.intent_reason_codes || []
   return (
     <div className="event-row">
       <div className={`event-icon ${tone}`}><Icon size={15} /></div>
       <div className="event-copy">
         <div className="event-title-row"><strong>{event.summary || prettyName(event.event_type)}</strong><time>{formatTime(event.timestamp)}</time></div>
         <p>{prettyName(event.event_type)}{event.tool_name ? ` · ${prettyName(event.tool_name)}` : ''}{event.policy_code ? ` · ${event.policy_code}` : ''}</p>
+        {(isTrustEvent || isIntentEvent) && (
+          <div className="event-model-details">
+            {isTrustEvent ? (
+              <>
+                <span>Model classification {details.classification || 'Unavailable'}</span>
+                <span>ML class {details.ml_classification || 'Unavailable'}</span>
+                <span>Weighted {formatModelScore(details.weighted_trust_score)}</span>
+                <span>ML {formatModelScore(details.ml_trust_score)}</span>
+                <span>Combined {formatModelScore(details.combined_trust_score)}</span>
+                {details.mandatory_override && <strong>Mandatory policy override</strong>}
+              </>
+            ) : (
+              <span>Intent {details.classification || details.intent_classification || 'UNCERTAIN'}{details.confidence != null ? ` · ${(details.confidence * 100).toFixed(0)}% confidence` : ''}</span>
+            )}
+            {reasonCodes.length > 0 && <small>{reasonCodes.join(' · ')}</small>}
+          </div>
+        )}
+        {details.taint_state && <span className="event-detail-tag">Taint {details.taint_state}</span>}
+        {details.required_capability && <span className="event-detail-tag">Capability {details.required_capability}</span>}
+        {details.error && <span className="event-detail-tag event-detail-error">{details.error}</span>}
       </div>
     </div>
   )
@@ -817,17 +1031,28 @@ function IntegrationCard({ integration, saving, onChange }) {
     <article className="card integration-card">
       <div className="integration-card-top">
         <IntegrationIcon name={integration.name} />
-        <div className="integration-card-name"><strong>{prettyName(integration.name)}</strong><span><StatusDot online={Boolean(integration.enabled)} /> {integration.enabled ? 'Connected' : 'Disabled'}</span></div>
+        <div className="integration-card-name"><strong>{prettyName(integration.name)}</strong><span><StatusDot online={Boolean(integration.enabled)} /> {integration.enabled ? 'Enabled at gateway' : 'Disabled'}</span></div>
         <span className="integration-managed">GATEWAY MANAGED</span>
       </div>
       <p className="integration-description">{integration.description || descriptions[integration.name] || 'Tool registered with the ShadowGuard gateway.'}</p>
       <div className="trust-score-row">
-        <span>Trust score</span>
-        <strong>{integration.trust_score ?? 0}/100</strong>
-        <small>{integration.trust_classification || integration.trust_zone} · {integration.trust_reason || 'No trust evidence recorded'}</small>
+        <span>Gateway model classification</span>
+        <ClassificationBadge classification={integration.trust_classification} />
+        <small>ML prediction: {integration.ml_classification || 'Unavailable'}</small>
+        <div className="trust-model-scores">
+          <div><small>Weighted</small><strong>{formatModelScore(integration.weighted_trust_score)}</strong></div>
+          <div><small>ML score</small><strong>{formatModelScore(integration.ml_trust_score)}</strong></div>
+          <div><small>Combined</small><strong>{formatModelScore(integration.combined_trust_score)}</strong></div>
+        </div>
+        {integration.trust_reason_codes?.length > 0 && (
+          <small>Reasons: {integration.trust_reason_codes.join(' · ')}</small>
+        )}
+        {integration.mandatory_override && (
+          <span className="trust-model-override" role="status">Mandatory security check overrode the model score</span>
+        )}
       </div>
       <div className="integration-card-footer">
-        <label htmlFor={`zone-${integration.name}`}>Trust zone</label>
+        <label htmlFor={`zone-${integration.name}`}>Configured trust zone</label>
         <div className="select-wrap">
           <select
             id={`zone-${integration.name}`}
@@ -868,6 +1093,46 @@ function EmptyState({ title, detail, large = false }) {
       <span><CheckCircle2 size={20} /></span>
       <strong>{title}</strong>
       <p>{detail}</p>
+    </div>
+  )
+}
+
+function ConfirmationDialog({ approval, decision, busy, onCancel, onConfirm }) {
+  const isApprove = decision === 'approve'
+  useEffect(() => {
+    function onKeyDown(event) {
+      if (event.key === 'Escape' && !busy) onCancel()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [busy, onCancel])
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget && !busy) onCancel()
+    }}>
+      <section className="confirmation-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirmation-title">
+        <div className={cx('dialog-icon', isApprove ? 'dialog-icon-approve' : 'dialog-icon-reject')}>
+          {isApprove ? <ShieldCheck size={20} /> : <ShieldAlert size={20} />}
+        </div>
+        <p className="eyebrow">{isApprove ? 'HUMAN APPROVAL REQUIRED' : 'REJECTION CONFIRMATION'}</p>
+        <h2 id="confirmation-title">{isApprove ? 'Approve this protected action?' : 'Reject this protected action?'}</h2>
+        <p className="dialog-description">
+          {isApprove
+            ? 'The backend will revalidate this exact staged action before it can run. Review the operation and target before proceeding.'
+            : 'The request will be rejected, and the staged operation will not be executed.'}
+        </p>
+        <div className="dialog-action-summary">
+          <span>{prettyName(approval.tool_name || 'Protected action')}</span>
+          <strong>{approval.operation || approval.target_resource || approval.sql_text || 'Staged operation'}</strong>
+        </div>
+        <div className="dialog-actions">
+          <button className="button-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className={isApprove ? 'button-approve' : 'button-reject'} onClick={onConfirm} disabled={busy}>
+            {busy ? <LoaderCircle size={15} className="spin" /> : isApprove ? <Check size={15} /> : <X size={15} />}
+            {isApprove ? 'Confirm approval' : 'Confirm rejection'}
+          </button>
+        </div>
+      </section>
     </div>
   )
 }
